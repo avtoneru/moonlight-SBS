@@ -2,7 +2,6 @@ package com.limelight.binding.video;
 
 import java.nio.ByteBuffer;
 import java.util.Locale;
-import java.util.concurrent.locks.LockSupport;
 
 import org.jcodec.codecs.h264.io.model.SeqParameterSet;
 import org.jcodec.codecs.h264.io.model.VUIParameters;
@@ -20,10 +19,13 @@ import android.media.MediaFormat;
 import android.media.MediaCodec.BufferInfo;
 import android.media.MediaCodec.CodecException;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Choreographer;
 import android.view.SurfaceHolder;
 
 @SuppressWarnings("unused")
-public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
+public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer implements Choreographer.FrameCallback {
 
 	private ByteBuffer[] videoDecoderInputBuffers;
 	private MediaCodec videoDecoder;
@@ -32,6 +34,7 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 	private VideoDepacketizer depacketizer;
 	private boolean adaptivePlayback;
 	private int initialWidth, initialHeight;
+    private boolean stopped;
 
     private boolean needsBaselineSpsHack;
     private SeqParameterSet savedSps;
@@ -45,8 +48,10 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 	private int numSpsIn;
 	private int numPpsIn;
 	private int numIframeIn;
-	
-	private static final boolean ENABLE_ASYNC_RENDERER = false;
+
+    private int skippedFrames;
+    private int renderedFrames;
+    private long startTime;
 	
 	@TargetApi(Build.VERSION_CODES.KITKAT)
 	public MediaCodecDecoderRenderer() {
@@ -107,56 +112,10 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 			videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, height);
 		}
 		
-		// On Lollipop, we use asynchronous mode to avoid having a busy looping renderer thread
-		if (ENABLE_ASYNC_RENDERER && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-			videoDecoder.setCallback(new MediaCodec.Callback() {
-				@Override
-				public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-			    	LimeLog.info("Output format changed");
-			    	LimeLog.info("New output Format: " + format);
-				}
-				
-				@Override
-				public void onOutputBufferAvailable(MediaCodec codec, int index,
-						BufferInfo info) {
-					try {
-						// FIXME: It looks like we can't frameskip here
-						codec.releaseOutputBuffer(index, true);
-					} catch (Exception e) {
-						handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
-					}
-				}
-				
-				@Override
-				public void onInputBufferAvailable(MediaCodec codec, int index) {
-					try {
-						submitDecodeUnit(depacketizer.takeNextDecodeUnit(), codec.getInputBuffer(index), index);
-					} catch (InterruptedException e) {
-						// What do we do here?
-						e.printStackTrace();
-					} catch (Exception e) {
-						handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
-					}
-				}
-				
-				@Override
-				public void onError(MediaCodec codec, CodecException e) {
-					if (e.isTransient()) {
-						LimeLog.warning(e.getDiagnosticInfo());
-						e.printStackTrace();
-					}
-					else {
-						LimeLog.severe(e.getDiagnosticInfo());
-						e.printStackTrace();
-					}
-				}
-			});
-		}
-		
 		videoDecoder.configure(videoFormat, ((SurfaceHolder)renderTarget).getSurface(), null, 0);
 		videoDecoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
-		
-		LimeLog.info("Using hardware decoding");
+
+        LimeLog.info("Using hardware decoding");
 		
 		return true;
 	}
@@ -191,119 +150,25 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 			@SuppressWarnings("deprecation")
 			@Override
 			public void run() {
-				BufferInfo info = new BufferInfo();
-				DecodeUnit du = null;
-				int inputIndex = -1;
 				while (!isInterrupted())
 				{
-					// In order to get as much data to the decoder as early as possible,
-					// try to submit up to 5 decode units at once without blocking.
-					if (inputIndex == -1 && du == null) {
-						try {
-							for (int i = 0; i < 5; i++) {
-								inputIndex = videoDecoder.dequeueInputBuffer(0);
-								du = depacketizer.pollNextDecodeUnit();
-
-								// Stop if we can't get a DU or input buffer
-								if (du == null || inputIndex == -1) {
-									break;
-								}
-								
-								submitDecodeUnit(du, videoDecoderInputBuffers[inputIndex], inputIndex);
-								
-								du = null;
-								inputIndex = -1;
-							}
-						} catch (Exception e) {
-							inputIndex = -1;
-							handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
-						}
-					}
-					
-					// Grab an input buffer if we don't have one already.
-					// This way we can have one ready hopefully by the time
-					// the depacketizer is done with this frame. It's important
-					// that this can timeout because it's possible that we could exhaust
-					// the decoder's input buffers and deadlocks because aren't pulling
-					// frames out of the other end.
-					if (inputIndex == -1) {
-						try {
-							// If we've got a DU waiting to be given to the decoder, 
-							// wait a full 3 ms for an input buffer. Otherwise
-							// just see if we can get one immediately.
-							inputIndex = videoDecoder.dequeueInputBuffer(du != null ? 3000 : 0);
-						} catch (Exception e) {
-							inputIndex = -1;
-							handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
-						}
-					}
-					
-					// Grab a decode unit if we don't have one already
-					if (du == null) {
-						du = depacketizer.pollNextDecodeUnit();
-					}
-					
-					// If we've got both a decode unit and an input buffer, we'll
-					// submit now. Otherwise, we wait until we have one.
-					if (du != null && inputIndex >= 0) {
-						submitDecodeUnit(du, videoDecoderInputBuffers[inputIndex], inputIndex);
-						
-						// DU and input buffer have both been consumed
-						du = null;
-						inputIndex = -1;
-					}
-					
-					// Try to output a frame
-					try {
-						int outIndex = videoDecoder.dequeueOutputBuffer(info, 0);
-
-					    if (outIndex >= 0) {
-					    	long presentationTimeUs = info.presentationTimeUs;
-						    int lastIndex = outIndex;
-						    
-						    // Get the last output buffer in the queue
-						    while ((outIndex = videoDecoder.dequeueOutputBuffer(info, 0)) >= 0) {
-						    	videoDecoder.releaseOutputBuffer(lastIndex, false);
-						    	lastIndex = outIndex;
-						    	presentationTimeUs = info.presentationTimeUs;
-						    }
-						    
-						    // Render the last buffer
-					    	videoDecoder.releaseOutputBuffer(lastIndex, true);
-					    	
-						    // Add delta time to the totals (excluding probable outliers)
-						    long delta = System.currentTimeMillis()-(presentationTimeUs/1000);
-						    if (delta >= 0 && delta < 1000) {
-						    	decoderTimeMs += delta;
-							    totalTimeMs += delta;
-						    }
-					    } else {
-						    switch (outIndex) {
-						    case MediaCodec.INFO_TRY_AGAIN_LATER:
-						    	// Getting an input buffer may already block
-						    	// so don't park if we still need to do that
-						    	if (inputIndex >= 0) {
-							    	LockSupport.parkNanos(1);
-						    	}
-						    	break;
-						    case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
-						    	LimeLog.info("Output buffers changed");
-							    break;
-						    case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
-						    	LimeLog.info("Output format changed");
-						    	LimeLog.info("New output Format: " + videoDecoder.getOutputFormat());
-						    	break;
-						    default:
-						      break;
-						    }
-					    }
-					} catch (Exception e) {
-						handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
-					}
+                    try {
+                        // Wait up to 50 ms for an input buffer before trying again
+                        int inputIndex = videoDecoder.dequeueInputBuffer(50000);
+                        if (inputIndex > 0) {
+                            submitDecodeUnit(depacketizer.takeNextDecodeUnit(),
+                                    videoDecoderInputBuffers[inputIndex], inputIndex);
+                        }
+                    } catch (InterruptedException e) {
+                        // Kill the thread
+                        return;
+                    } catch (Exception e) {
+                        handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
+                    }
 				}
 			}
 		};
-		rendererThread.setName("Video - Renderer (MediaCodec)");
+		rendererThread.setName("Video - Decoder Submission (MediaCodec)");
 		rendererThread.setPriority(Thread.MAX_PRIORITY);
 		rendererThread.start();
 	}
@@ -315,17 +180,25 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 		
 		// Start the decoder
 		videoDecoder.start();
-		
-		// On devices pre-Lollipop, we'll use a rendering thread
-		if (!ENABLE_ASYNC_RENDERER || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-			videoDecoderInputBuffers = videoDecoder.getInputBuffers();
-			startRendererThread();
-		}
+
+        videoDecoderInputBuffers = videoDecoder.getInputBuffers();
+        startRendererThread();
+
+        // Add the first frame callback
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                Choreographer.getInstance().postFrameCallback(MediaCodecDecoderRenderer.this);
+            }
+        });
+
 		return true;
 	}
 
 	@Override
 	public void stop() {
+        stopped = true;
+
 		if (rendererThread != null) {
 			// Halt the rendering thread
 			rendererThread.interrupt();
@@ -349,7 +222,7 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 		// Try 25 times to submit the input buffer before throwing a real exception
 		int i;
 		Exception lastException = null;
-		
+
 		for (i = 0; i < 25; i++) {
 			try {
 				videoDecoder.queueInputBuffer(inputBufferIndex,
@@ -361,7 +234,7 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 				lastException = e;
 			}
 		}
-		
+
 		if (i == 25) {
 			throw new RendererException(this, lastException, null, codecFlags);
 		}
@@ -369,7 +242,7 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
 
 	@SuppressWarnings("deprecation")
 	private void submitDecodeUnit(DecodeUnit decodeUnit, ByteBuffer buf, int inputBufferIndex) {
-		long currentTime = System.currentTimeMillis();
+        long currentTime = System.currentTimeMillis();
 		long delta = currentTime-decodeUnit.getReceiveTimestamp();
 		if (delta >= 0 && delta < 1000) {
 		    totalTimeMs += currentTime-decodeUnit.getReceiveTimestamp();
@@ -499,7 +372,7 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
         if (needsSpsReplay) {
             replaySps();
         }
-	}
+    }
 
     private void replaySps() {
         int inputIndex = videoDecoder.dequeueInputBuffer(-1);
@@ -553,6 +426,74 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer {
     @Override
     public String getDecoderName() {
         return decoderName;
+    }
+
+    @Override
+    public void doFrame(long frameTimeNanos) {
+        if (stopped) {
+            // Return without requesting another callback
+            return;
+        }
+
+        // Try to output a frame
+        try {
+            BufferInfo info = new BufferInfo();
+
+            // Wait up to 5 ms for a new frame
+            int outIndex = videoDecoder.dequeueOutputBuffer(info, 5000);
+            if (outIndex >= 0) {
+                long presentationTimeUs = info.presentationTimeUs;
+                int lastIndex = outIndex;
+
+                // Get the last output buffer in the queue
+                while ((outIndex = videoDecoder.dequeueOutputBuffer(info, 0)) >= 0) {
+                    videoDecoder.releaseOutputBuffer(lastIndex, false);
+                    lastIndex = outIndex;
+                    presentationTimeUs = info.presentationTimeUs;
+                    skippedFrames++;
+                }
+
+                // Render the last buffer
+                videoDecoder.releaseOutputBuffer(lastIndex, true);
+                renderedFrames++;
+
+                if (startTime == 0) {
+                    startTime = System.currentTimeMillis();
+                }
+
+                long endTime = System.currentTimeMillis();
+                if (renderedFrames % 60 == 0 && startTime != endTime) {
+                    System.out.println(renderedFrames / ((endTime - startTime) / 1000)+" FPS");
+                }
+
+                // Add delta time to the totals (excluding probable outliers)
+                long delta = System.currentTimeMillis()-(presentationTimeUs/1000);
+                if (delta >= 0 && delta < 1000) {
+                    decoderTimeMs += delta;
+                    totalTimeMs += delta;
+                }
+            } else {
+                switch (outIndex) {
+                    case MediaCodec.INFO_TRY_AGAIN_LATER:
+                        // Nothing to do
+                        break;
+                    case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
+                        LimeLog.info("Output buffers changed");
+                        break;
+                    case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
+                        LimeLog.info("Output format changed");
+                        LimeLog.info("New output Format: " + videoDecoder.getOutputFormat());
+                        break;
+                    default:
+                        break;
+                }
+            }
+        } catch (Exception e) {
+            handleDecoderException(MediaCodecDecoderRenderer.this, e, null, 0);
+        } finally {
+            // Post another callback
+            Choreographer.getInstance().postFrameCallback(this);
+        }
     }
 
     public class RendererException extends RuntimeException {
