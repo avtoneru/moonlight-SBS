@@ -13,6 +13,7 @@ import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
 import com.limelight.grid.AppGridAdapter;
 import com.limelight.nvstream.http.ComputerDetails;
+import com.limelight.nvstream.http.GfeHttpResponseException;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -53,17 +54,15 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     private ComputerManagerService.ApplistPoller poller;
     private SpinnerDialog blockingLoadSpinner;
     private String lastRawApplist;
+    private int lastRunningAppId;
 
-    private int consecutiveAppListFailures = 0;
-    private final static int CONSECUTIVE_FAILURE_LIMIT = 3;
-
-	private final static int START_OR_RESUME_ID = 1;
-	private final static int QUIT_ID = 2;
-	private final static int CANCEL_ID = 3;
+    private final static int START_OR_RESUME_ID = 1;
+    private final static int QUIT_ID = 2;
+    private final static int CANCEL_ID = 3;
     private final static int START_WTIH_QUIT = 4;
 
     public final static String NAME_EXTRA = "Name";
-	public final static String UUID_EXTRA = "UUID";
+    public final static String UUID_EXTRA = "UUID";
 
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -127,37 +126,41 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
             @Override
             public void notifyComputerUpdated(ComputerDetails details) {
                 // Don't care about other computers
-                if (details != computer) {
+                if (!details.uuid.toString().equalsIgnoreCase(uuidString)) {
                     return;
                 }
 
-                if (details.state != ComputerDetails.State.ONLINE) {
-                    consecutiveAppListFailures++;
+                if (details.state == ComputerDetails.State.OFFLINE) {
+                    // The PC is unreachable now
+                    AppView.this.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Display a toast to the user and quit the activity
+                            Toast.makeText(AppView.this, getResources().getText(R.string.lost_connection), Toast.LENGTH_SHORT).show();
+                            finish();
+                        }
+                    });
 
-                    if (consecutiveAppListFailures >= CONSECUTIVE_FAILURE_LIMIT) {
-                        // The PC is unreachable now
-                        AppView.this.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                // Display a toast to the user and quit the activity
-                                Toast.makeText(AppView.this, getResources().getText(R.string.lost_connection), Toast.LENGTH_SHORT).show();
-                                finish();
-                            }
-                        });
+                    return;
+                }
+
+                // App list is the same or empty
+                if (details.rawAppList == null || details.rawAppList.equals(lastRawApplist)) {
+
+                    // Let's check if the running app ID changed
+                    if (details.runningGameId != lastRunningAppId) {
+                        // Update the currently running game using the app ID
+                        lastRunningAppId = details.runningGameId;
+                        updateUiWithServerinfo(details);
                     }
 
                     return;
                 }
 
-                consecutiveAppListFailures = 0;
-
-                // App list is the same or empty; nothing to do
-                if (details.rawAppList == null || details.rawAppList.equals(lastRawApplist)) {
-                    return;
-                }
+                lastRunningAppId = details.runningGameId;
+                lastRawApplist = details.rawAppList;
 
                 try {
-                    lastRawApplist = details.rawAppList;
                     updateUiWithAppList(NvHTTP.getAppListByReader(new StringReader(details.rawAppList)));
 
                     if (blockingLoadSpinner != null) {
@@ -182,34 +185,38 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
         if (managerBinder != null) {
             managerBinder.stopPolling();
         }
+
+        if (appGridAdapter != null) {
+            appGridAdapter.cancelQueuedOperations();
+        }
     }
-	
-	@Override
-	protected void onCreate(Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
 
         String locale = PreferenceConfiguration.readPreferences(this).language;
-		if (!locale.equals(PreferenceConfiguration.DEFAULT_LANGUAGE)) {
-			Configuration config = new Configuration(getResources().getConfiguration());
-			config.locale = new Locale(locale);
-			getResources().updateConfiguration(config, getResources().getDisplayMetrics());
-		}
+        if (!locale.equals(PreferenceConfiguration.DEFAULT_LANGUAGE)) {
+            Configuration config = new Configuration(getResources().getConfiguration());
+            config.locale = new Locale(locale);
+            getResources().updateConfiguration(config, getResources().getDisplayMetrics());
+        }
 
-		setContentView(R.layout.activity_app_view);
+        setContentView(R.layout.activity_app_view);
 
         UiHelper.notifyNewRootView(this);
 
         uuidString = getIntent().getStringExtra(UUID_EXTRA);
-		
-		String labelText = getResources().getString(R.string.title_applist)+" "+getIntent().getStringExtra(NAME_EXTRA);
-		TextView label = (TextView) findViewById(R.id.appListText);
-		setTitle(labelText);
-		label.setText(labelText);
+
+        String labelText = getResources().getString(R.string.title_applist)+" "+getIntent().getStringExtra(NAME_EXTRA);
+        TextView label = (TextView) findViewById(R.id.appListText);
+        setTitle(labelText);
+        label.setText(labelText);
 
         // Bind to the computer manager service
         bindService(new Intent(this, ComputerManagerService.class), serviceConnection,
                 Service.BIND_AUTO_CREATE);
-	}
+    }
 
     private void populateAppGridWithCache() {
         try {
@@ -233,25 +240,25 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
         blockingLoadSpinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.applist_refresh_title),
                 getResources().getString(R.string.applist_refresh_msg), true);
     }
-	
-	@Override
-	protected void onDestroy() {
-		super.onDestroy();
-		
-		SpinnerDialog.closeDialogs(this);
-		Dialog.closeDialogs();
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        SpinnerDialog.closeDialogs(this);
+        Dialog.closeDialogs();
 
         if (managerBinder != null) {
             unbindService(serviceConnection);
         }
-	}
-	
-	@Override
-	protected void onResume() {
-		super.onResume();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
 
         startComputerUpdates();
-	}
+    }
 
     @Override
     protected void onPause() {
@@ -259,49 +266,41 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
 
         stopComputerUpdates();
     }
-	
-	private int getRunningAppId() {
+
+    private int getRunningAppId() {
         int runningAppId = -1;
         for (int i = 0; i < appGridAdapter.getCount(); i++) {
-        	AppObject app = (AppObject) appGridAdapter.getItem(i);
-        	if (app.app == null) {
-        		continue;
-        	}
-        	
-        	if (app.app.getIsRunning()) {
-        		runningAppId = app.app.getAppId();
-        		break;
-        	}
+            AppObject app = (AppObject) appGridAdapter.getItem(i);
+            if (app.app.getIsRunning()) {
+                runningAppId = app.app.getAppId();
+                break;
+            }
         }
         return runningAppId;
-	}
-	
-	@Override
-	public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
-		super.onCreateContextMenu(menu, v, menuInfo);
+    }
+
+    @Override
+    public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
+        super.onCreateContextMenu(menu, v, menuInfo);
         
         AdapterContextMenuInfo info = (AdapterContextMenuInfo) menuInfo;
         AppObject selectedApp = (AppObject) appGridAdapter.getItem(info.position);
-        if (selectedApp == null || selectedApp.app == null) {
-        	return;
-        }
-        
         int runningAppId = getRunningAppId();
         if (runningAppId != -1) {
-        	if (runningAppId == selectedApp.app.getAppId()) {
+            if (runningAppId == selectedApp.app.getAppId()) {
                 menu.add(Menu.NONE, START_OR_RESUME_ID, 1, getResources().getString(R.string.applist_menu_resume));
                 menu.add(Menu.NONE, QUIT_ID, 2, getResources().getString(R.string.applist_menu_quit));
-        	}
-        	else {
+            }
+            else {
                 menu.add(Menu.NONE, START_WTIH_QUIT, 1, getResources().getString(R.string.applist_menu_quit_and_start));
                 menu.add(Menu.NONE, CANCEL_ID, 2, getResources().getString(R.string.applist_menu_cancel));
-        	}
+            }
         }
     }
-	
-	@Override
-	public void onContextMenuClosed(Menu menu) {
-	}
+
+    @Override
+    public void onContextMenuClosed(Menu menu) {
+    }
 
     private void displayQuitConfirmationDialog(final Runnable onYes, final Runnable onNo) {
         DialogInterface.OnClickListener dialogClickListener = new DialogInterface.OnClickListener() {
@@ -368,26 +367,61 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
         }
     }
 
+    private void updateUiWithServerinfo(final ComputerDetails details) {
+        AppView.this.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                boolean updated = false;
+
+                    // Look through our current app list to tag the running app
+                for (int i = 0; i < appGridAdapter.getCount(); i++) {
+                    AppObject existingApp = (AppObject) appGridAdapter.getItem(i);
+
+                    // There can only be one or zero apps running.
+                    if (existingApp.app.getIsRunning() &&
+                            existingApp.app.getAppId() == details.runningGameId) {
+                        // This app was running and still is, so we're done now
+                        return;
+                    }
+                    else if (existingApp.app.getAppId() == details.runningGameId) {
+                        // This app wasn't running but now is
+                        existingApp.app.setIsRunning(true);
+                        updated = true;
+                    }
+                    else if (existingApp.app.getIsRunning()) {
+                        // This app was running but now isn't
+                        existingApp.app.setIsRunning(false);
+                        updated = true;
+                    }
+                    else {
+                        // This app wasn't running and still isn't
+                    }
+                }
+
+                if (updated) {
+                    appGridAdapter.notifyDataSetChanged();
+                }
+            }
+        });
+    }
+
     private void updateUiWithAppList(final List<NvApp> appList) {
         AppView.this.runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 boolean updated = false;
 
+                // First handle app updates and additions
                 for (NvApp app : appList) {
                     boolean foundExistingApp = false;
 
                     // Try to update an existing app in the list first
                     for (int i = 0; i < appGridAdapter.getCount(); i++) {
                         AppObject existingApp = (AppObject) appGridAdapter.getItem(i);
-                        if (existingApp.app == null) {
-                            continue;
-                        }
-
                         if (existingApp.app.getAppId() == app.getAppId()) {
                             // Found the app; update its properties
                             if (existingApp.app.getIsRunning() != app.getIsRunning()) {
-                                existingApp.app.setIsRunningBoolean(app.getIsRunning());
+                                existingApp.app.setIsRunning(app.getIsRunning());
                                 updated = true;
                             }
                             if (!existingApp.app.getAppName().equals(app.getAppName())) {
@@ -407,6 +441,34 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                     }
                 }
 
+                // Next handle app removals
+                int i = 0;
+                while (i < appGridAdapter.getCount()) {
+                    boolean foundExistingApp = false;
+                    AppObject existingApp = (AppObject) appGridAdapter.getItem(i);
+
+                    // Check if this app is in the latest list
+                    for (NvApp app : appList) {
+                        if (existingApp.app.getAppId() == app.getAppId()) {
+                            foundExistingApp = true;
+                            break;
+                        }
+                    }
+
+                    // This app was removed in the latest app list
+                    if (!foundExistingApp) {
+                        appGridAdapter.removeApp(existingApp);
+                        updated = true;
+
+                        // Check this same index again because the item at i+1 is now at i after
+                        // the removal
+                        continue;
+                    }
+
+                    // Move on to the next item
+                    i++;
+                }
+
                 if (updated) {
                     appGridAdapter.notifyDataSetChanged();
                 }
@@ -414,57 +476,66 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
         });
     }
 
-	private void doStart(NvApp app) {
-		Intent intent = new Intent(this, Game.class);
-		intent.putExtra(Game.EXTRA_HOST,
+    private void doStart(NvApp app) {
+        Intent intent = new Intent(this, Game.class);
+        intent.putExtra(Game.EXTRA_HOST,
                 computer.reachability == ComputerDetails.Reachability.LOCAL ?
                 computer.localIp.getHostAddress() : computer.remoteIp.getHostAddress());
-		intent.putExtra(Game.EXTRA_APP, app.getAppName());
-		intent.putExtra(Game.EXTRA_UNIQUEID, managerBinder.getUniqueId());
-		intent.putExtra(Game.EXTRA_STREAMING_REMOTE,
+        intent.putExtra(Game.EXTRA_APP_NAME, app.getAppName());
+        intent.putExtra(Game.EXTRA_APP_ID, app.getAppId());
+        intent.putExtra(Game.EXTRA_UNIQUEID, managerBinder.getUniqueId());
+        intent.putExtra(Game.EXTRA_STREAMING_REMOTE,
                 computer.reachability != ComputerDetails.Reachability.LOCAL);
-		startActivity(intent);
-	}
-	
-	private void doQuit(final NvApp app) {
-		Toast.makeText(AppView.this, getResources().getString(R.string.applist_quit_app)+" "+app.getAppName()+"...", Toast.LENGTH_SHORT).show();
-		new Thread(new Runnable() {
-			@Override
-			public void run() {
-				NvHTTP httpConn;
-				String message;
-				try {
-					httpConn = new NvHTTP(getAddress(),
+        startActivity(intent);
+    }
+
+    private void doQuit(final NvApp app) {
+        Toast.makeText(AppView.this, getResources().getString(R.string.applist_quit_app)+" "+app.getAppName()+"...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                NvHTTP httpConn;
+                String message;
+                try {
+                    httpConn = new NvHTTP(getAddress(),
                             managerBinder.getUniqueId(), null, PlatformBinding.getCryptoProvider(AppView.this));
-					if (httpConn.quitApp()) {
-						message = getResources().getString(R.string.applist_quit_success)+" "+app.getAppName();
-					}
-					else {
-						message = getResources().getString(R.string.applist_quit_fail)+" "+app.getAppName();
-					}
-				} catch (UnknownHostException e) {
-					message = getResources().getString(R.string.error_unknown_host);
-				} catch (FileNotFoundException e) {
-					message = getResources().getString(R.string.error_404);
-				} catch (Exception e) {
-					message = e.getMessage();
-				} finally {
+                    if (httpConn.quitApp()) {
+                        message = getResources().getString(R.string.applist_quit_success) + " " + app.getAppName();
+                    } else {
+                        message = getResources().getString(R.string.applist_quit_fail) + " " + app.getAppName();
+                    }
+                } catch (GfeHttpResponseException e) {
+                    if (e.getErrorCode() == 599) {
+                        message = "This session wasn't started by this device," +
+                                " so it cannot be quit. End streaming on the original " +
+                                "device or the PC itself. (Error code: "+e.getErrorCode()+")";
+                    }
+                    else {
+                        message = e.getMessage();
+                    }
+                } catch (UnknownHostException e) {
+                    message = getResources().getString(R.string.error_unknown_host);
+                } catch (FileNotFoundException e) {
+                    message = getResources().getString(R.string.error_404);
+                } catch (Exception e) {
+                    message = e.getMessage();
+                } finally {
                     // Trigger a poll immediately
                     if (poller != null) {
                         poller.pollNow();
                     }
                 }
-				
-				final String toastMessage = message;
-				runOnUiThread(new Runnable() {
-					@Override
-					public void run() {
-						Toast.makeText(AppView.this, toastMessage, Toast.LENGTH_LONG).show();
-					}
-				});
-			}
-		}).start();
-	}
+
+                final String toastMessage = message;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(AppView.this, toastMessage, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }).start();
+    }
 
     @Override
     public int getAdapterFragmentLayoutId() {
@@ -481,9 +552,6 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
             public void onItemClick(AdapterView<?> arg0, View arg1, int pos,
                                     long id) {
                 AppObject app = (AppObject) appGridAdapter.getItem(pos);
-                if (app == null || app.app == null) {
-                    return;
-                }
 
                 // Only open the context menu if something is running, otherwise start it
                 if (getRunningAppId() != -1) {
@@ -494,18 +562,22 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
             }
         });
         registerForContextMenu(listView);
+        listView.requestFocus();
     }
 
     public class AppObject {
-		public final NvApp app;
-		
-		public AppObject(NvApp app) {
-			this.app = app;
-		}
-		
-		@Override
-		public String toString() {
-			return app.getAppName();
-		}
-	}
+        public final NvApp app;
+
+        public AppObject(NvApp app) {
+            if (app == null) {
+                throw new IllegalArgumentException("app must not be null");
+            }
+            this.app = app;
+        }
+
+        @Override
+        public String toString() {
+            return app.getAppName();
+        }
+    }
 }
