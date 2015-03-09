@@ -462,9 +462,12 @@ public class MediaCodecDecoderRenderer extends EnhancedDecoderRenderer implement
                 }
 
                 long endTime = System.currentTimeMillis();
-                int diffMs = (int) ((endTime - startTime) / 1000);
-                if (renderedFrames % 60 == 0 && diffMs != 0) {
-                    LimeLog.info(renderedFrames / diffMs+" FPS");
+                double diffMs = ((endTime - startTime) / 1000.0);
+                if (diffMs >= 1.0) {
+                    LimeLog.info(renderedFrames / diffMs+" FPS ("+skippedFrames+" skipped)");
+
+                    startTime = 0;
+                    renderedFrames = 0;
                 }
 
                 // Add delta time to the totals (excluding probable outliers)
