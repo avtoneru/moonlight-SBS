@@ -5,18 +5,20 @@ import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.input.InputHandler;
 import com.limelight.binding.video.ConfigurableDecoderRenderer;
 import com.limelight.nvstream.NvConnection;
-import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.GameGestures;
+import com.limelight.ui.MoonlightConnectionListener;
+import com.limelight.ui.AbstractUiConnectionListener;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.SpinnerDialog;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.media.AudioManager;
 import android.net.ConnectivityManager;
@@ -38,19 +40,19 @@ import android.widget.Toast;
 import java.util.Locale;
 
 
-public class Game extends Activity implements SurfaceHolder.Callback, NvConnectionListener,
+public class Game extends Activity implements SurfaceHolder.Callback,
     OnSystemUiVisibilityChangeListener, GameGestures, View.OnGenericMotionListener, View.OnTouchListener
 {
     private PreferenceConfiguration prefConfig;
 
     private NvConnection conn;
-    private SpinnerDialog spinner;
-    private boolean displayedFailureDialog = false;
-    private boolean connecting = false;
-    private boolean connected = false;
-
+    private boolean connecting;
     private ConfigurableDecoderRenderer decoderRenderer;
     private InputHandler inputHandler;
+    private AbstractUiConnectionListener connectionListener;
+
+    private SurfaceView surfaceView;
+    private boolean surfaceIsCreated;
 
     private WifiManager.WifiLock wifiLock;
 
@@ -101,55 +103,70 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
         // Inflate the content
         setContentView(R.layout.activity_game);
 
-        // Start the spinner
-        spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
-                getResources().getString(R.string.conn_establishing_msg), true);
-
-        // Read the stream preferences
-        prefConfig = PreferenceConfiguration.readPreferences(this);
-        switch (prefConfig.decoder) {
-        case PreferenceConfiguration.FORCE_SOFTWARE_DECODER:
-            drFlags |= VideoDecoderRenderer.FLAG_FORCE_SOFTWARE_DECODING;
-            break;
-        case PreferenceConfiguration.AUTOSELECT_DECODER:
-            break;
-        case PreferenceConfiguration.FORCE_HARDWARE_DECODER:
-            drFlags |= VideoDecoderRenderer.FLAG_FORCE_HARDWARE_DECODING;
-            break;
-        }
-
-        if (prefConfig.stretchVideo) {
-            drFlags |= VideoDecoderRenderer.FLAG_FILL_SCREEN;
-        }
-
-        // Listen for events on the game surface
-        SurfaceView sv = (SurfaceView) findViewById(R.id.surfaceView);
-        sv.setOnGenericMotionListener(this);
-        sv.setOnTouchListener(this);
-
-        // Warn the user if they're on a metered connection
-        checkDataConnection();
-
         // Make sure Wi-Fi is fully powered up
         WifiManager wifiMgr = (WifiManager) getSystemService(Context.WIFI_SERVICE);
         wifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Limelight");
         wifiLock.setReferenceCounted(false);
         wifiLock.acquire();
 
-        String host = Game.this.getIntent().getStringExtra(EXTRA_HOST);
-        String appName = Game.this.getIntent().getStringExtra(EXTRA_APP_NAME);
-        int appId = Game.this.getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
-        String uniqueId = Game.this.getIntent().getStringExtra(EXTRA_UNIQUEID);
-        boolean remote = Game.this.getIntent().getBooleanExtra(EXTRA_STREAMING_REMOTE, false);
+        // Listen for events on the game surface
+        surfaceView = (SurfaceView) findViewById(R.id.surfaceView);
+        surfaceView.setOnGenericMotionListener(this);
+        surfaceView.setOnTouchListener(this);
+        surfaceView.getHolder().addCallback(this);
+
+        // Perform intent handling
+        handleNormalLaunchIntent(getIntent());
+    }
+
+    // Required to initialize prefConfig and connectionListener
+    private void handleNormalLaunchIntent(Intent intent) {
+        // Read the stream preferences
+        prefConfig = PreferenceConfiguration.readPreferences(this);
+
+        // Initialize the connection listener
+        connectionListener = new MoonlightConnectionListener(this, prefConfig);
+
+        // Warn the user if they're on a metered connection
+        checkDataConnection();
+
+        // Get the parameters from the launch intent
+        String host = intent.getStringExtra(EXTRA_HOST);
+        String appName = intent.getStringExtra(EXTRA_APP_NAME);
+        int appId = intent.getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
+        String uniqueId = intent.getStringExtra(EXTRA_UNIQUEID);
+        boolean remote = intent.getBooleanExtra(EXTRA_STREAMING_REMOTE, false);
 
         if (appId == StreamConfiguration.INVALID_APP_ID) {
             finish();
             return;
         }
 
+        // Begin the connection process
+        startStreaming(host, appName, appId, uniqueId, remote);
+    }
+
+    private void startStreaming(String host, String appName, int appId, String uniqueId, boolean remote) {
+        // Initialize decoder flags
+        switch (prefConfig.decoder) {
+            case PreferenceConfiguration.FORCE_SOFTWARE_DECODER:
+                drFlags |= VideoDecoderRenderer.FLAG_FORCE_SOFTWARE_DECODING;
+                break;
+            case PreferenceConfiguration.AUTOSELECT_DECODER:
+                break;
+            case PreferenceConfiguration.FORCE_HARDWARE_DECODER:
+                drFlags |= VideoDecoderRenderer.FLAG_FORCE_HARDWARE_DECODING;
+                break;
+        }
+
+        if (prefConfig.stretchVideo) {
+            drFlags |= VideoDecoderRenderer.FLAG_FILL_SCREEN;
+        }
+
+        // Create the video decoder
         decoderRenderer = new ConfigurableDecoderRenderer();
         decoderRenderer.initializeWithFlags(drFlags);
-        
+
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(prefConfig.width, prefConfig.height)
                 .setRefreshRate(prefConfig.fps)
@@ -164,19 +181,25 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
                 .build();
 
         // Initialize the connection
-        conn = new NvConnection(host, uniqueId, Game.this, config, PlatformBinding.getCryptoProvider(this));
+        conn = new NvConnection(host, uniqueId, connectionListener, config, PlatformBinding.getCryptoProvider(this));
 
         inputHandler = new InputHandler(conn, this, prefConfig, this);
         inputHandler.start();
 
-        SurfaceHolder sh = sv.getHolder();
+        SurfaceHolder sh = surfaceView.getHolder();
         if (prefConfig.stretchVideo || !decoderRenderer.isHardwareAccelerated()) {
             // Set the surface to the size of the video
-            sh.setFixedSize(prefConfig.width, prefConfig.height);
+            sh.setFixedSize(config.getWidth(), config.getHeight());
         }
 
-        // The connection will be started when the surface gets created
-        sh.addCallback(this);
+        if (surfaceIsCreated) {
+            // The surface already exists at this point. We'll invoke the callback again
+            // synthetically to cause streaming to start
+            surfaceCreated(sh);
+        }
+        else {
+            // Otherwise, the surface hasn't been created so the callback will happen on its own
+        }
     }
 
     private void resizeSurfaceWithAspectRatio(SurfaceView sv, double vidWidth, double vidHeight)
@@ -198,7 +221,7 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
     {
         ConnectivityManager mgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         if (mgr.isActiveNetworkMetered()) {
-            displayTransientMessage(getResources().getString(R.string.conn_metered));
+            connectionListener.displayTransientMessage(getResources().getString(R.string.conn_metered));
         }
     }
 
@@ -223,7 +246,20 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
             }
     };
 
-    private void hideSystemUi(int delay) {
+    // This is called by the connection listener
+    public void stopConnection() {
+        // Stop the input handler to release inputs
+        inputHandler.stop();
+
+        if (connecting || connectionListener.getConnectionComplete()) {
+            connecting = false;
+            connectionListener.setConnectionComplete(false);
+            conn.stop();
+        }
+    }
+
+    // This is called by the connection listener
+    public void hideSystemUi(int delay) {
         Handler h = getWindow().getDecorView().getHandler();
         if (h != null) {
             h.removeCallbacks(hideSystemUi);
@@ -238,24 +274,26 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
 
-        displayedFailureDialog = true;
+        connectionListener.setExpectingTermination(true);
         stopConnection();
 
-        int averageEndToEndLat = decoderRenderer.getAverageEndToEndLatency();
-        int averageDecoderLat = decoderRenderer.getAverageDecoderLatency();
-        String message = null;
-        if (averageEndToEndLat > 0) {
-            message = getResources().getString(R.string.conn_client_latency)+" "+averageEndToEndLat+" ms";
-            if (averageDecoderLat > 0) {
-                message += " ("+getResources().getString(R.string.conn_client_latency_hw)+" "+averageDecoderLat+" ms)";
+        if (!prefConfig.suppressLatencyToast) {
+            int averageEndToEndLat = decoderRenderer.getAverageEndToEndLatency();
+            int averageDecoderLat = decoderRenderer.getAverageDecoderLatency();
+            String message = null;
+            if (averageEndToEndLat > 0) {
+                message = getResources().getString(R.string.conn_client_latency)+" "+averageEndToEndLat+" ms";
+                if (averageDecoderLat > 0) {
+                    message += " ("+getResources().getString(R.string.conn_client_latency_hw)+" "+averageDecoderLat+" ms)";
+                }
             }
-        }
-        else if (averageDecoderLat > 0) {
-            message = getResources().getString(R.string.conn_hardware_latency)+" "+averageDecoderLat+" ms";
-        }
+            else if (averageDecoderLat > 0) {
+                message = getResources().getString(R.string.conn_hardware_latency)+" "+averageDecoderLat+" ms";
+            }
 
-        if (message != null) {
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            if (message != null) {
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            }
         }
 
         finish();
@@ -276,95 +314,14 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
     }
 
     @Override
-    public void stageStarting(Stage stage) {
-        if (spinner != null) {
-            spinner.setMessage(getResources().getString(R.string.conn_starting) + " " + stage.getName());
-        }
-    }
-
-    @Override
-    public void stageComplete(Stage stage) {
-    }
-
-    private void stopConnection() {
-        // Stop the input handler to release inputs
-        inputHandler.stop();
-
-        if (connecting || connected) {
-            connecting = connected = false;
-            conn.stop();
-        }
-    }
-
-    @Override
-    public void stageFailed(Stage stage) {
-        if (spinner != null) {
-            spinner.dismiss();
-            spinner = null;
-        }
-
-        if (!displayedFailureDialog) {
-            displayedFailureDialog = true;
-            stopConnection();
-            Dialog.displayDialog(this, getResources().getString(R.string.conn_error_title),
-                    getResources().getString(R.string.conn_error_msg) + " " + stage.getName(), true);
-        }
-    }
-
-    @Override
-    public void connectionTerminated(Exception e) {
-        if (!displayedFailureDialog) {
-            displayedFailureDialog = true;
-            e.printStackTrace();
-
-            stopConnection();
-            Dialog.displayDialog(this, getResources().getString(R.string.conn_terminated_title),
-                    getResources().getString(R.string.conn_terminated_msg), true);
-        }
-    }
-
-    @Override
-    public void connectionStarted() {
-        if (spinner != null) {
-            spinner.dismiss();
-            spinner = null;
-        }
-
-        connecting = false;
-        connected = true;
-
-        hideSystemUi(1000);
-    }
-
-    @Override
-    public void displayMessage(final String message) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
-            }
-        });
-    }
-
-    @Override
-    public void displayTransientMessage(final String message) {
-        if (!prefConfig.disableWarnings) {
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
-                }
-            });
-        }
-    }
-
-    @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
     }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
-        if (!connected && !connecting) {
+        surfaceIsCreated = true;
+
+        if (conn != null && !connectionListener.getConnectionComplete() && !connecting) {
             connecting = true;
 
             // Resize the surface to match the aspect ratio of the video
@@ -381,7 +338,9 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        if (connected) {
+        surfaceIsCreated = false;
+
+        if (connectionListener.getConnectionComplete()) {
             stopConnection();
         }
     }
@@ -389,7 +348,7 @@ public class Game extends Activity implements SurfaceHolder.Callback, NvConnecti
     @Override
     public void onSystemUiVisibilityChange(int visibility) {
         // Don't do anything if we're not connected
-        if (!connected) {
+        if (!connectionListener.getConnectionComplete()) {
             return;
         }
 
