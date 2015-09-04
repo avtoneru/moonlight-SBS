@@ -19,6 +19,7 @@ public class DiscoveryService extends Service {
     private MdnsDiscoveryAgent discoveryAgent;
     private MdnsDiscoveryListener boundListener;
     private MulticastLock multicastLock;
+    private boolean discoveryRunning = false;
 
     public class DiscoveryBinder extends Binder {
         public void setListener(MdnsDiscoveryListener listener) {
@@ -26,13 +27,25 @@ public class DiscoveryService extends Service {
         }
 
         public void startDiscovery(int queryIntervalMs) {
+            if (discoveryRunning) {
+                return;
+            }
+
             multicastLock.acquire();
             discoveryAgent.startDiscovery(queryIntervalMs);
+
+            discoveryRunning = true;
         }
 
         public void stopDiscovery() {
+            if (!discoveryRunning) {
+                return;
+            }
+
             discoveryAgent.stopDiscovery();
             multicastLock.release();
+
+            discoveryRunning = false;
         }
 
         public List<MdnsComputer> getComputerSet() {
@@ -80,8 +93,10 @@ public class DiscoveryService extends Service {
     @Override
     public boolean onUnbind(Intent intent) {
         // Stop any discovery session
-        discoveryAgent.stopDiscovery();
-        multicastLock.release();
+        if (discoveryRunning) {
+            discoveryAgent.stopDiscovery();
+            multicastLock.release();
+        }
 
         // Unbind the listener
         boundListener = null;

@@ -154,6 +154,10 @@ public class ComputerManagerService extends Service {
         }
 
         public void startPolling() {
+            if (pollingActive) {
+                return;
+            }
+
             // Polling is active
             pollingActive = true;
 
@@ -203,8 +207,11 @@ public class ComputerManagerService extends Service {
         }
 
         public void stopPolling() {
-            // Just call the unbind handler to cleanup
-            ComputerManagerService.this.onUnbind(null);
+            ComputerManagerService.this.stopPolling();
+        }
+
+        public boolean isPolling() {
+            return pollingActive;
         }
 
         public ApplistPoller createAppListPoller(ComputerDetails computer) {
@@ -228,8 +235,11 @@ public class ComputerManagerService extends Service {
         }
     }
 
-    @Override
-    public boolean onUnbind(Intent intent) {
+    private void stopPolling() {
+        if (!pollingActive) {
+            return;
+        }
+
         // Stop mDNS autodiscovery
         discoveryBinder.stopDiscovery();
 
@@ -244,6 +254,12 @@ public class ComputerManagerService extends Service {
                 }
             }
         }
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        // Stop polling
+        stopPolling();
 
         // Remove the listener
         listener = null;
