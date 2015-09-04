@@ -143,10 +143,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         // Begin the connection process
-        startStreaming(host, appName, appId, uniqueId, remote);
+        startStreaming(host, new NvApp(appName, appId), uniqueId, remote);
     }
 
-    private void startStreaming(String host, String appName, int appId, String uniqueId, boolean remote) {
+    private void startStreaming(String host, NvApp app, String uniqueId, boolean remote) {
         // Initialize decoder flags
         switch (prefConfig.decoder) {
             case PreferenceConfiguration.FORCE_SOFTWARE_DECODER:
@@ -170,7 +170,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(prefConfig.width, prefConfig.height)
                 .setRefreshRate(prefConfig.fps)
-                .setApp(new NvApp(appName, appId))
+                .setApp(app)
                 .setBitrate(prefConfig.bitrate * 1000)
                 .setEnableSops(prefConfig.enableSops)
                 .enableAdaptiveResolution((decoderRenderer.getCapabilities() &
