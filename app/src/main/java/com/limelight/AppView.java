@@ -89,6 +89,61 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                         return;
                     }
 
+                    // Register the computer listener
+                    managerBinder.setListener(new ComputerManagerListener() {
+                        @Override
+                        public void notifyComputerUpdated(ComputerDetails details) {
+                            // Do nothing if updates are suspended
+                            if (suspendGridUpdates) {
+                                return;
+                            }
+
+                            // Don't care about other computers
+                            if (!details.uuid.toString().equalsIgnoreCase(uuidString)) {
+                                return;
+                            }
+
+                            if (details.state == ComputerDetails.State.OFFLINE) {
+                                // The PC is unreachable now
+                                AppView.this.runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        // Display a toast to the user and quit the activity
+                                        Toast.makeText(AppView.this, getResources().getText(R.string.lost_connection), Toast.LENGTH_SHORT).show();
+                                        finish();
+                                    }
+                                });
+
+                                return;
+                            }
+
+                            // App list is the same or empty
+                            if (details.rawAppList == null || details.rawAppList.equals(lastRawApplist)) {
+
+                                // Let's check if the running app ID changed
+                                if (details.runningGameId != lastRunningAppId) {
+                                    // Update the currently running game using the app ID
+                                    lastRunningAppId = details.runningGameId;
+                                    updateUiWithServerinfo(details);
+                                }
+
+                                return;
+                            }
+
+                            lastRunningAppId = details.runningGameId;
+                            lastRawApplist = details.rawAppList;
+
+                            try {
+                                updateUiWithAppList(NvHTTP.getAppListByReader(new StringReader(details.rawAppList)));
+
+                                if (blockingLoadSpinner != null) {
+                                    blockingLoadSpinner.dismiss();
+                                    blockingLoadSpinner = null;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    });
+
                     // Start updates
                     startComputerUpdates();
 
@@ -112,59 +167,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
             return;
         }
 
-        managerBinder.startPolling(new ComputerManagerListener() {
-            @Override
-            public void notifyComputerUpdated(ComputerDetails details) {
-                // Do nothing if updates are suspended
-                if (suspendGridUpdates) {
-                    return;
-                }
-
-                // Don't care about other computers
-                if (!details.uuid.toString().equalsIgnoreCase(uuidString)) {
-                    return;
-                }
-
-                if (details.state == ComputerDetails.State.OFFLINE) {
-                    // The PC is unreachable now
-                    AppView.this.runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            // Display a toast to the user and quit the activity
-                            Toast.makeText(AppView.this, getResources().getText(R.string.lost_connection), Toast.LENGTH_SHORT).show();
-                            finish();
-                        }
-                    });
-
-                    return;
-                }
-
-                // App list is the same or empty
-                if (details.rawAppList == null || details.rawAppList.equals(lastRawApplist)) {
-
-                    // Let's check if the running app ID changed
-                    if (details.runningGameId != lastRunningAppId) {
-                        // Update the currently running game using the app ID
-                        lastRunningAppId = details.runningGameId;
-                        updateUiWithServerinfo(details);
-                    }
-
-                    return;
-                }
-
-                lastRunningAppId = details.runningGameId;
-                lastRawApplist = details.rawAppList;
-
-                try {
-                    updateUiWithAppList(NvHTTP.getAppListByReader(new StringReader(details.rawAppList)));
-
-                    if (blockingLoadSpinner != null) {
-                        blockingLoadSpinner.dismiss();
-                        blockingLoadSpinner = null;
-                    }
-                } catch (Exception ignored) {}
-            }
-        });
+        managerBinder.startPolling();
 
         if (poller == null) {
             poller = managerBinder.createAppListPoller(computer);

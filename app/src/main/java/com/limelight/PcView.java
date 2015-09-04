@@ -69,6 +69,21 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     // Now make the binder visible
                     managerBinder = localBinder;
 
+                    // Register the listener
+                    managerBinder.setListener(new ComputerManagerListener() {
+                        @Override
+                        public void notifyComputerUpdated(final ComputerDetails details) {
+                            if (!freezeUpdates) {
+                                PcView.this.runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        updateComputer(details);
+                                    }
+                                });
+                            }
+                        }
+                    });
+
                     // Start updates
                     startComputerUpdates();
 
@@ -167,19 +182,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             }
 
             freezeUpdates = false;
-            managerBinder.startPolling(new ComputerManagerListener() {
-                @Override
-                public void notifyComputerUpdated(final ComputerDetails details) {
-                    if (!freezeUpdates) {
-                        PcView.this.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                updateComputer(details);
-                            }
-                        });
-                    }
-                }
-            });
+            managerBinder.startPolling();
             runningPolling = true;
         }
     }
