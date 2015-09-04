@@ -1,22 +1,14 @@
 package com.limelight;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.Locale;
 
-import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.crypto.AndroidCryptoProvider;
 import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
 import com.limelight.grid.PcGridAdapter;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
-import com.limelight.nvstream.http.NvHTTP;
-import com.limelight.nvstream.http.PairingManager;
 import com.limelight.nvstream.http.PairingManager.PairState;
-import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
@@ -277,238 +269,21 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         startComputerUpdates();
     }
 
-    private void doPair(final ComputerDetails computer) {
-        if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (computer.runningGameId != 0) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.pair_pc_ingame), Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (managerBinder == null) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        Toast.makeText(PcView.this, getResources().getString(R.string.pairing), Toast.LENGTH_SHORT).show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                NvHTTP httpConn;
-                String message;
-                boolean success = false;
-                try {
-                    // Stop updates and wait while pairing
-                    stopComputerUpdates(true);
-
-                    InetAddress addr = null;
-                    if (computer.reachability == ComputerDetails.Reachability.LOCAL) {
-                        addr = computer.localIp;
-                    }
-                    else if (computer.reachability == ComputerDetails.Reachability.REMOTE) {
-                        addr = computer.remoteIp;
-                    }
-                    else {
-                        LimeLog.warning("Unknown reachability - using local IP");
-                        addr = computer.localIp;
-                    }
-
-                    httpConn = new NvHTTP(addr,
-                            managerBinder.getUniqueId(),
-                            PlatformBinding.getDeviceName(),
-                            PlatformBinding.getCryptoProvider(PcView.this));
-                    if (httpConn.getPairState() == PairingManager.PairState.PAIRED) {
-                        // Don't display any toast, but open the app list
-                        message = null;
-                        success = true;
-                    }
-                    else {
-                        final String pinStr = PairingManager.generatePinString();
-
-                        // Spin the dialog off in a thread because it blocks
-                        Dialog.displayDialog(PcView.this, getResources().getString(R.string.pair_pairing_title),
-                                getResources().getString(R.string.pair_pairing_msg)+" "+pinStr, false);
-
-                        PairingManager.PairState pairState = httpConn.pair(pinStr);
-                        if (pairState == PairingManager.PairState.PIN_WRONG) {
-                            message = getResources().getString(R.string.pair_incorrect_pin);
-                        }
-                        else if (pairState == PairingManager.PairState.FAILED) {
-                            message = getResources().getString(R.string.pair_fail);
-                        }
-                        else if (pairState == PairingManager.PairState.PAIRED) {
-                            // Just navigate to the app view without displaying a toast
-                            message = null;
-                            success = true;
-                        }
-                        else {
-                            // Should be no other values
-                            message = null;
-                        }
-                    }
-                } catch (UnknownHostException e) {
-                    message = getResources().getString(R.string.error_unknown_host);
-                } catch (FileNotFoundException e) {
-                    message = getResources().getString(R.string.error_404);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    message = e.getMessage();
-                }
-
-                Dialog.closeDialogs();
-
-                final String toastMessage = message;
-                final boolean toastSuccess = success;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (toastMessage != null) {
-                            Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
-                        }
-
-                        if (toastSuccess) {
-                            // Open the app list after a successful pairing attemp
-                            doAppList(computer);
-                        }
-                    }
-                });
-
-                // Start polling again
-                startComputerUpdates();
-            }
-        }).start();
-    }
-
-    private void doWakeOnLan(final ComputerDetails computer) {
-        if (computer.reachability != ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.wol_pc_online), Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        if (computer.macAddress == null) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.wol_no_mac), Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        Toast.makeText(PcView.this, getResources().getString(R.string.wol_waking_pc), Toast.LENGTH_SHORT).show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                String message;
-                try {
-                    WakeOnLanSender.sendWolPacket(computer);
-                    message = getResources().getString(R.string.wol_waking_msg);
-                } catch (IOException e) {
-                    message = getResources().getString(R.string.wol_fail);
-                }
-
-                final String toastMessage = message;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        }).start();
-    }
-
-    private void doUnpair(final ComputerDetails computer) {
-        if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (managerBinder == null) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        Toast.makeText(PcView.this, getResources().getString(R.string.unpairing), Toast.LENGTH_SHORT).show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                NvHTTP httpConn;
-                String message;
-                try {
-                    InetAddress addr = null;
-                    if (computer.reachability == ComputerDetails.Reachability.LOCAL) {
-                        addr = computer.localIp;
-                    }
-                    else if (computer.reachability == ComputerDetails.Reachability.REMOTE) {
-                        addr = computer.remoteIp;
-                    }
-                    else {
-                        LimeLog.warning("Unknown reachability - using local IP");
-                        addr = computer.localIp;
-                    }
-
-                    httpConn = new NvHTTP(addr,
-                            managerBinder.getUniqueId(),
-                            PlatformBinding.getDeviceName(),
-                            PlatformBinding.getCryptoProvider(PcView.this));
-                    if (httpConn.getPairState() == PairingManager.PairState.PAIRED) {
-                        httpConn.unpair();
-                        if (httpConn.getPairState() == PairingManager.PairState.NOT_PAIRED) {
-                            message = getResources().getString(R.string.unpair_success);
-                        }
-                        else {
-                            message = getResources().getString(R.string.unpair_fail);
-                        }
-                    }
-                    else {
-                        message = getResources().getString(R.string.unpair_error);
-                    }
-                } catch (UnknownHostException e) {
-                    message = getResources().getString(R.string.error_unknown_host);
-                } catch (FileNotFoundException e) {
-                    message = getResources().getString(R.string.error_404);
-                } catch (Exception e) {
-                    message = e.getMessage();
-                }
-
-                final String toastMessage = message;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        }).start();
-    }
-
-    private void doAppList(ComputerDetails computer) {
-        if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (managerBinder == null) {
-            Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        Intent i = new Intent(this, AppView.class);
-        i.putExtra(AppView.NAME_EXTRA, computer.name);
-        i.putExtra(AppView.UUID_EXTRA, computer.uuid.toString());
-        startActivity(i);
-    }
-
     @Override
     public boolean onContextItemSelected(MenuItem item) {
         AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
         final ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(info.position);
         switch (item.getItemId()) {
             case PAIR_ID:
-                doPair(computer.details);
+                ServerHelper.doPair(this, managerBinder, computer.details, true);
                 return true;
 
             case UNPAIR_ID:
-                doUnpair(computer.details);
+                ServerHelper.doUnpair(this, managerBinder, computer.details);
                 return true;
 
             case WOL_ID:
-                doWakeOnLan(computer.details);
+                ServerHelper.doWakeOnLan(this, computer.details);
                 return true;
 
             case DELETE_ID:
@@ -521,24 +296,14 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 return true;
 
             case APP_LIST_ID:
-                doAppList(computer.details);
+                ServerHelper.doAppList(this, computer.details);
                 return true;
 
             case RESUME_ID:
-                if (managerBinder == null) {
-                    Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-                    return true;
-                }
-
                 ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId), computer.details, managerBinder);
                 return true;
 
             case QUIT_ID:
-                if (managerBinder == null) {
-                    Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-                    return true;
-                }
-
                 // Display a confirmation dialog first
                 UiHelper.displayQuitConfirmationDialog(this, new Runnable() {
                     @Override
@@ -624,9 +389,9 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     openContextMenu(arg1);
                 } else if (computer.details.pairState != PairState.PAIRED) {
                     // Pair an unpaired machine by default
-                    doPair(computer.details);
+                    ServerHelper.doPair(PcView.this, managerBinder, computer.details, true);
                 } else {
-                    doAppList(computer.details);
+                    ServerHelper.doAppList(PcView.this, computer.details);
                 }
             }
         });
