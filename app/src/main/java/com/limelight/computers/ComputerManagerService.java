@@ -199,8 +199,12 @@ public class ComputerManagerService extends Service {
             }
         }
 
-        public boolean addComputerBlocking(InetAddress addr) {
+        public boolean addComputerBlocking(InetAddress addr) throws InterruptedException {
             return ComputerManagerService.this.addComputerBlocking(addr);
+        }
+
+        public ComputerDetails pollComputerBlocking(InetAddress addr) throws InterruptedException {
+            return ComputerManagerService.this.pollComputerBlocking(addr);
         }
 
         public void removeComputer(String name) {
@@ -273,7 +277,11 @@ public class ComputerManagerService extends Service {
             @Override
             public void notifyComputerAdded(MdnsComputer computer) {
                 // Kick off a serverinfo poll on this machine
-                addComputerBlocking(computer.getAddress());
+                try {
+                    addComputerBlocking(computer.getAddress());
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
 
             @Override
@@ -319,25 +327,27 @@ public class ComputerManagerService extends Service {
         }
     }
 
-    public boolean addComputerBlocking(InetAddress addr) {
+    public ComputerDetails pollComputerBlocking(InetAddress addr) throws InterruptedException {
         // Setup a placeholder
         ComputerDetails fakeDetails = new ComputerDetails();
         fakeDetails.localIp = addr;
         fakeDetails.remoteIp = addr;
 
         // Block while we try to fill the details
-        try {
-            runPoll(fakeDetails, true, 0);
-        } catch (InterruptedException e) {
-            return false;
-        }
+        runPoll(fakeDetails, true, 0);
+        return fakeDetails;
+    }
+
+    public boolean addComputerBlocking(InetAddress addr) throws InterruptedException {
+        // Poll the computer first
+        ComputerDetails details = pollComputerBlocking(addr);
 
         // If the machine is reachable, it was successful
-        if (fakeDetails.state == ComputerDetails.State.ONLINE) {
-            LimeLog.info("New PC ("+fakeDetails.name+") is UUID "+fakeDetails.uuid);
+        if (details.state == ComputerDetails.State.ONLINE) {
+            LimeLog.info("New PC ("+details.name+") is UUID "+details.uuid);
 
             // Start a polling thread for this machine
-            addTuple(fakeDetails);
+            addTuple(details);
             return true;
         }
         else {

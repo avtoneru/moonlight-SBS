@@ -62,6 +62,8 @@ public class AddComputerManually extends Activity {
             }
         } catch (UnknownHostException e) {
             msg = getResources().getString(R.string.addpc_unknown_host);
+        } catch (InterruptedException e) {
+            msg = e.getMessage();
         }
 
         dialog.dismiss();
