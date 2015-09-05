@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.res.Configuration;
 import android.view.View;
+import android.widget.Toast;
 
 import com.limelight.R;
 
@@ -58,5 +59,14 @@ public class UiHelper {
                 .setPositiveButton(parent.getResources().getString(R.string.yes), dialogClickListener)
                 .setNegativeButton(parent.getResources().getString(R.string.no), dialogClickListener)
                 .show();
+    }
+
+    public static void displayToast(final Activity activity, final String message, final int toastLength) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(activity, message, toastLength).show();
+            }
+        });
     }
 }

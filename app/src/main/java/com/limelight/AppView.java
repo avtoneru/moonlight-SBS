@@ -310,6 +310,10 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 UiHelper.displayQuitConfirmationDialog(this, new Runnable() {
                     @Override
                     public void run() {
+                        if (managerBinder == null) {
+                            Toast.makeText(AppView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+                            return;
+                        }
                         ServerHelper.doStart(AppView.this, app.app, computer, managerBinder);
                     }
                 }, null);
@@ -317,6 +321,10 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
 
             case START_OR_RESUME_ID:
                 // Resume is the same as start for us
+                if (managerBinder == null) {
+                    Toast.makeText(this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+                    return true;
+                }
                 ServerHelper.doStart(AppView.this, app.app, computer, managerBinder);
                 return true;
 
@@ -326,18 +334,26 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                     @Override
                     public void run() {
                         suspendGridUpdates = true;
+                        UiHelper.displayToast(AppView.this, getResources().getString(R.string.applist_quit_app) + " " + app.app.getAppName() + "...", Toast.LENGTH_SHORT);
                         ServerHelper.doQuit(AppView.this,
                                 ServerHelper.getCurrentAddressFromComputer(computer),
-                                app.app, managerBinder, new Runnable() {
-                            @Override
-                            public void run() {
-                                // Trigger a poll immediately
-                                suspendGridUpdates = false;
-                                if (poller != null) {
-                                    poller.pollNow();
-                                }
-                            }
-                        });
+                                app.app, managerBinder, new ServerHelper.ActionListener() {
+                                    @Override
+                                    public void onFailure(String message) {
+                                        UiHelper.displayToast(AppView.this, message, Toast.LENGTH_LONG);
+                                    }
+
+                                    @Override
+                                    public void onSuccess() {
+                                        UiHelper.displayToast(AppView.this, getResources().getString(R.string.applist_quit_success) + " " + app.app.getAppName(), Toast.LENGTH_LONG);
+
+                                        // Trigger a poll immediately
+                                        suspendGridUpdates = false;
+                                        if (poller != null) {
+                                            poller.pollNow();
+                                        }
+                                    }
+                                });
                     }
                 }, null);
                 return true;
@@ -479,6 +495,10 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
                 if (getRunningAppId() != -1) {
                     openContextMenu(arg1);
                 } else {
+                    if (managerBinder == null) {
+                        Toast.makeText(AppView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+                        return;
+                    }
                     ServerHelper.doStart(AppView.this, app.app, computer, managerBinder);
                 }
             }

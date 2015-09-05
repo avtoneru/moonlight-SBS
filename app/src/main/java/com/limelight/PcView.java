@@ -167,6 +167,32 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         initializeViews();
     }
 
+    private class ToastyActionListener implements ServerHelper.ActionListener {
+        private int successToastResId;
+        private boolean hasSuccessToast;
+
+        public ToastyActionListener() {
+            this.hasSuccessToast = false;
+        }
+
+        public ToastyActionListener(int successToastResId) {
+            this.successToastResId = successToastResId;
+            this.hasSuccessToast = true;
+        }
+
+        @Override
+        public void onFailure(String message) {
+            UiHelper.displayToast(PcView.this, message, Toast.LENGTH_LONG);
+        }
+
+        @Override
+        public void onSuccess() {
+            if (hasSuccessToast) {
+                UiHelper.displayToast(PcView.this, getResources().getString(successToastResId), Toast.LENGTH_SHORT);
+            }
+        }
+    }
+
     private void startComputerUpdates() {
         if (managerBinder != null) {
             if (runningPolling) {
@@ -275,15 +301,29 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         final ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(info.position);
         switch (item.getItemId()) {
             case PAIR_ID:
-                ServerHelper.doPair(this, managerBinder, computer.details, true);
+                Toast.makeText(this, getResources().getString(R.string.pairing), Toast.LENGTH_SHORT).show();
+                ServerHelper.doPair(this, managerBinder, computer.details, new ServerHelper.ActionListener() {
+                    @Override
+                    public void onFailure(String message) {
+                        UiHelper.displayToast(PcView.this, message, Toast.LENGTH_LONG);
+                    }
+
+                    @Override
+                    public void onSuccess() {
+                        // Display the app list after pairing
+                        ServerHelper.doAppList(PcView.this, computer.details);
+                    }
+                });
                 return true;
 
             case UNPAIR_ID:
-                ServerHelper.doUnpair(this, managerBinder, computer.details);
+                Toast.makeText(this, getResources().getString(R.string.unpairing), Toast.LENGTH_SHORT).show();
+                ServerHelper.doUnpair(this, managerBinder, computer.details, new ToastyActionListener(R.string.unpair_success));
                 return true;
 
             case WOL_ID:
-                ServerHelper.doWakeOnLan(this, computer.details);
+                Toast.makeText(this, getResources().getString(R.string.wol_waking_pc), Toast.LENGTH_SHORT).show();
+                ServerHelper.doWakeOnLan(this, computer.details, new ToastyActionListener(R.string.wol_waking_msg));
                 return true;
 
             case DELETE_ID:
@@ -296,10 +336,18 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 return true;
 
             case APP_LIST_ID:
+                if (computer.details.reachability == ComputerDetails.Reachability.OFFLINE) {
+                    Toast.makeText(this, getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
+                    return true;
+                }
                 ServerHelper.doAppList(this, computer.details);
                 return true;
 
             case RESUME_ID:
+                if (managerBinder == null) {
+                    Toast.makeText(this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+                    return true;
+                }
                 ServerHelper.doStart(this, new NvApp("app", computer.details.runningGameId), computer.details, managerBinder);
                 return true;
 
@@ -308,9 +356,20 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                 UiHelper.displayQuitConfirmationDialog(this, new Runnable() {
                     @Override
                     public void run() {
+                        UiHelper.displayToast(PcView.this, getResources().getString(R.string.applist_quit_app) + " app...", Toast.LENGTH_SHORT);
                         ServerHelper.doQuit(PcView.this,
                                 ServerHelper.getCurrentAddressFromComputer(computer.details),
-                                new NvApp("app", 0), managerBinder, null);
+                                new NvApp("app", 0), managerBinder, new ServerHelper.ActionListener() {
+                                    @Override
+                                    public void onFailure(String message) {
+                                        UiHelper.displayToast(PcView.this, message, Toast.LENGTH_LONG);
+                                    }
+
+                                    @Override
+                                    public void onSuccess() {
+                                        UiHelper.displayToast(PcView.this, getResources().getString(R.string.applist_quit_success) + " app", Toast.LENGTH_LONG);
+                                    }
+                                });
                     }
                 }, null);
                 return true;
@@ -381,7 +440,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             @Override
             public void onItemClick(AdapterView<?> arg0, View arg1, int pos,
                                     long id) {
-                ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(pos);
+                final ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(pos);
                 if (computer.details.reachability == ComputerDetails.Reachability.UNKNOWN) {
                     // Do nothing
                 } else if (computer.details.reachability == ComputerDetails.Reachability.OFFLINE) {
@@ -389,7 +448,19 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     openContextMenu(arg1);
                 } else if (computer.details.pairState != PairState.PAIRED) {
                     // Pair an unpaired machine by default
-                    ServerHelper.doPair(PcView.this, managerBinder, computer.details, true);
+                    Toast.makeText(PcView.this, getResources().getString(R.string.pairing), Toast.LENGTH_SHORT).show();
+                    ServerHelper.doPair(PcView.this, managerBinder, computer.details, new ServerHelper.ActionListener() {
+                        @Override
+                        public void onFailure(String message) {
+                            UiHelper.displayToast(PcView.this, message, Toast.LENGTH_LONG);
+                        }
+
+                        @Override
+                        public void onSuccess() {
+                            // Display the app list after pairing
+                            ServerHelper.doAppList(PcView.this, computer.details);
+                        }
+                    });
                 } else {
                     ServerHelper.doAppList(PcView.this, computer.details);
                 }

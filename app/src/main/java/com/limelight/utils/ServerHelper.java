@@ -2,7 +2,6 @@ package com.limelight.utils;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.widget.Toast;
 
 import com.limelight.AppView;
 import com.limelight.Game;
@@ -28,24 +27,28 @@ public class ServerHelper {
                 computer.remoteIp : computer.localIp;
     }
 
+    public interface ActionListener {
+        void onFailure(String message);
+        void onSuccess();
+    }
+
     public static void doPair(final Activity activity,
                               final ComputerManagerService.ComputerManagerBinder managerBinder,
                               final ComputerDetails computer,
-                              final boolean openAppViewOnSuccess) {
+                              final ActionListener completionListener) {
         if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.pair_pc_offline));
             return;
         }
         if (computer.runningGameId != 0) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.pair_pc_ingame), Toast.LENGTH_LONG).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.pair_pc_ingame));
             return;
         }
         if (managerBinder == null) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.error_manager_not_running));
             return;
         }
 
-        Toast.makeText(activity, activity.getResources().getString(R.string.pairing), Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -61,17 +64,7 @@ public class ServerHelper {
                 }
 
                 try {
-                    InetAddress addr = null;
-                    if (computer.reachability == ComputerDetails.Reachability.LOCAL) {
-                        addr = computer.localIp;
-                    }
-                    else if (computer.reachability == ComputerDetails.Reachability.REMOTE) {
-                        addr = computer.remoteIp;
-                    }
-                    else {
-                        LimeLog.warning("Unknown reachability - using local IP");
-                        addr = computer.localIp;
-                    }
+                    InetAddress addr = ServerHelper.getCurrentAddressFromComputer(computer);
 
                     httpConn = new NvHTTP(addr,
                             managerBinder.getUniqueId(),
@@ -117,21 +110,12 @@ public class ServerHelper {
 
                 Dialog.closeDialogs();
 
-                final String toastMessage = message;
-                final boolean toastSuccess = success;
-                activity.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (toastMessage != null) {
-                            Toast.makeText(activity, toastMessage, Toast.LENGTH_LONG).show();
-                        }
-
-                        if (toastSuccess && openAppViewOnSuccess) {
-                            // Open the app list after a successful pairing attempt
-                            ServerHelper.doAppList(activity, computer);
-                        }
-                    }
-                });
+                if (success) {
+                    completionListener.onSuccess();
+                }
+                else {
+                    completionListener.onFailure(message);
+                }
 
                 if (cmsIsPolling) {
                     // Start polling again
@@ -141,66 +125,49 @@ public class ServerHelper {
         }).start();
     }
 
-    public static void doWakeOnLan(final Activity activity, final ComputerDetails computer) {
+    public static void doWakeOnLan(final Activity activity,
+                                   final ComputerDetails computer,
+                                   final ActionListener completionListener) {
         if (computer.reachability != ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.wol_pc_online), Toast.LENGTH_SHORT).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.wol_pc_online));
             return;
         }
 
         if (computer.macAddress == null) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.wol_no_mac), Toast.LENGTH_SHORT).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.wol_no_mac));
             return;
         }
 
-        Toast.makeText(activity, activity.getResources().getString(R.string.wol_waking_pc), Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 String message;
                 try {
                     WakeOnLanSender.sendWolPacket(computer);
-                    message = activity.getResources().getString(R.string.wol_waking_msg);
+                    completionListener.onSuccess();
                 } catch (IOException e) {
-                    message = activity.getResources().getString(R.string.wol_fail);
+                    completionListener.onFailure(activity.getResources().getString(R.string.wol_fail));
                 }
-
-                final String toastMessage = message;
-                activity.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(activity, toastMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
             }
         }).start();
     }
 
     public static void doUnpair(final Activity activity,
-                                 final ComputerManagerService.ComputerManagerBinder managerBinder,
-                                 final ComputerDetails computer) {
+                                final ComputerManagerService.ComputerManagerBinder managerBinder,
+                                final ComputerDetails computer,
+                                final ActionListener completionListener) {
         if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
+            completionListener.onFailure(activity.getResources().getString(R.string.error_pc_offline));
             return;
         }
 
-        Toast.makeText(activity, activity.getResources().getString(R.string.unpairing), Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 NvHTTP httpConn;
                 String message;
                 try {
-                    InetAddress addr = null;
-                    if (computer.reachability == ComputerDetails.Reachability.LOCAL) {
-                        addr = computer.localIp;
-                    }
-                    else if (computer.reachability == ComputerDetails.Reachability.REMOTE) {
-                        addr = computer.remoteIp;
-                    }
-                    else {
-                        LimeLog.warning("Unknown reachability - using local IP");
-                        addr = computer.localIp;
-                    }
+                    InetAddress addr = ServerHelper.getCurrentAddressFromComputer(computer);
 
                     httpConn = new NvHTTP(addr,
                             managerBinder.getUniqueId(),
@@ -209,7 +176,8 @@ public class ServerHelper {
                     if (httpConn.getPairState() == PairingManager.PairState.PAIRED) {
                         httpConn.unpair();
                         if (httpConn.getPairState() == PairingManager.PairState.NOT_PAIRED) {
-                            message = activity.getResources().getString(R.string.unpair_success);
+                            completionListener.onSuccess();
+                            return;
                         }
                         else {
                             message = activity.getResources().getString(R.string.unpair_fail);
@@ -226,40 +194,25 @@ public class ServerHelper {
                     message = e.getMessage();
                 }
 
-                final String toastMessage = message;
-                activity.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(activity, toastMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
+                completionListener.onFailure(message);
             }
         }).start();
     }
 
-    public static void doAppList(final Activity activity, final ComputerDetails computer) {
-        if (computer.reachability == ComputerDetails.Reachability.OFFLINE) {
-            Toast.makeText(activity, activity.getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
-            return;
-        }
-
+    public static void doAppList(final Activity activity,
+                                 final ComputerDetails computer) {
         Intent i = new Intent(activity, AppView.class);
         i.putExtra(AppView.NAME_EXTRA, computer.name);
         i.putExtra(AppView.UUID_EXTRA, computer.uuid.toString());
         activity.startActivity(i);
     }
 
-    public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
-                               ComputerManagerService.ComputerManagerBinder managerBinder) {
-        if (managerBinder == null) {
-            Toast.makeText(parent, parent.getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
-            return;
-        }
-
+    public static void doStart(final Activity parent,
+                               final NvApp app,
+                               final ComputerDetails computer,
+                               final ComputerManagerService.ComputerManagerBinder managerBinder) {
         Intent intent = new Intent(parent, Game.class);
-        intent.putExtra(Game.EXTRA_HOST,
-                computer.reachability == ComputerDetails.Reachability.LOCAL ?
-                        computer.localIp.getHostAddress() : computer.remoteIp.getHostAddress());
+        intent.putExtra(Game.EXTRA_HOST, ServerHelper.getCurrentAddressFromComputer(computer).getHostAddress());
         intent.putExtra(Game.EXTRA_APP_NAME, app.getAppName());
         intent.putExtra(Game.EXTRA_APP_ID, app.getAppId());
         intent.putExtra(Game.EXTRA_UNIQUEID, managerBinder.getUniqueId());
@@ -272,13 +225,12 @@ public class ServerHelper {
                               final InetAddress address,
                               final NvApp app,
                               final ComputerManagerService.ComputerManagerBinder managerBinder,
-                              final Runnable onComplete) {
+                              final ActionListener completionListener) {
         if (managerBinder == null) {
-            Toast.makeText(parent, parent.getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
+            completionListener.onFailure(parent.getResources().getString(R.string.error_manager_not_running));
             return;
         }
 
-        Toast.makeText(parent, parent.getResources().getString(R.string.applist_quit_app) + " " + app.getAppName() + "...", Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -288,7 +240,8 @@ public class ServerHelper {
                     httpConn = new NvHTTP(address,
                             managerBinder.getUniqueId(), null, PlatformBinding.getCryptoProvider(parent));
                     if (httpConn.quitApp()) {
-                        message = parent.getResources().getString(R.string.applist_quit_success) + " " + app.getAppName();
+                        completionListener.onSuccess();
+                        return;
                     } else {
                         message = parent.getResources().getString(R.string.applist_quit_fail) + " " + app.getAppName();
                     }
@@ -307,19 +260,9 @@ public class ServerHelper {
                     message = parent.getResources().getString(R.string.error_404);
                 } catch (Exception e) {
                     message = e.getMessage();
-                } finally {
-                    if (onComplete != null) {
-                        onComplete.run();
-                    }
                 }
 
-                final String toastMessage = message;
-                parent.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(parent, toastMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
+                completionListener.onFailure(message);
             }
         }).start();
     }
