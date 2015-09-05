@@ -24,8 +24,8 @@ import java.net.UnknownHostException;
 
 public class ServerHelper {
     public static InetAddress getCurrentAddressFromComputer(ComputerDetails computer) {
-        return computer.reachability == ComputerDetails.Reachability.LOCAL ?
-                computer.localIp : computer.remoteIp;
+        return computer.reachability == ComputerDetails.Reachability.REMOTE ?
+                computer.remoteIp : computer.localIp;
     }
 
     public static void doPair(final Activity activity,
