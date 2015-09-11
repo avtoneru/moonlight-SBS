@@ -38,7 +38,7 @@ public class MoonlightConnectionListener extends AbstractUiConnectionListener {
         }
 
         if (!getExpectingTermination()) {
-            setExpectingTermination(true);
+            notifyExpectingTermination();
             activity.stopConnection();
             Dialog.displayDialog(activity, activity.getResources().getString(R.string.conn_error_title),
                     activity.getResources().getString(R.string.conn_error_msg) + " " + stage.getName(), true);
@@ -48,7 +48,7 @@ public class MoonlightConnectionListener extends AbstractUiConnectionListener {
     @Override
     public void connectionTerminated(Exception e) {
         if (!getExpectingTermination()) {
-            setExpectingTermination(true);
+            notifyExpectingTermination();
             e.printStackTrace();
 
             activity.stopConnection();
@@ -64,7 +64,7 @@ public class MoonlightConnectionListener extends AbstractUiConnectionListener {
             spinner = null;
         }
 
-        setConnectionComplete(true);
+        notifyConnectionComplete();
 
         activity.hideSystemUi(1000);
     }

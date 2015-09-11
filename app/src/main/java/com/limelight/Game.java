@@ -46,9 +46,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private PreferenceConfiguration prefConfig;
 
     private NvConnection conn;
-    private boolean connecting;
+    private boolean connectionStarted;
     private ConfigurableDecoderRenderer decoderRenderer;
     private InputHandler inputHandler;
+    private boolean inputHandlerRunning;
     private AbstractUiConnectionListener connectionListener;
 
     private SurfaceView surfaceView;
@@ -185,6 +186,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         inputHandler = new InputHandler(conn, this, prefConfig, this);
         inputHandler.start();
+        inputHandlerRunning = true;
 
         SurfaceHolder sh = surfaceView.getHolder();
         if (prefConfig.stretchVideo || !decoderRenderer.isHardwareAccelerated()) {
@@ -248,13 +250,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     // This is called by the connection listener
     public void stopConnection() {
-        // Stop the input handler to release inputs
-        inputHandler.stop();
+        // Termination is expected
+        connectionListener.notifyExpectingTermination();
 
-        if (connecting || connectionListener.getConnectionComplete()) {
-            connecting = false;
-            connectionListener.setConnectionComplete(false);
+        if (inputHandlerRunning) {
+            // Stop the input handler to release inputs
+            inputHandler.stop();
+            inputHandlerRunning = false;
+        }
+
+        // Stop the connection if it has been made
+        if (connectionStarted) {
             conn.stop();
+            connectionStarted = false;
+
+            // Notify the connection listener that we've stopped
+            connectionListener.notifyStreamStopped();
         }
     }
 
@@ -274,7 +285,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
 
-        connectionListener.setExpectingTermination(true);
         stopConnection();
 
         if (!prefConfig.suppressLatencyToast) {
@@ -321,9 +331,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void surfaceCreated(SurfaceHolder holder) {
         surfaceIsCreated = true;
 
-        if (conn != null && !connectionListener.getConnectionComplete() && !connecting) {
-            connecting = true;
-
+        if (conn != null && !connectionStarted && !connectionListener.getExpectingTermination()) {
             // Resize the surface to match the aspect ratio of the video
             // This must be done after the surface is created.
             if (!prefConfig.stretchVideo && decoderRenderer.isHardwareAccelerated()) {
@@ -331,6 +339,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         prefConfig.width, prefConfig.height);
             }
 
+            connectionStarted = true;
             conn.start(PlatformBinding.getDeviceName(), holder, drFlags,
                     PlatformBinding.getAudioRenderer(), decoderRenderer);
         }
@@ -340,7 +349,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void surfaceDestroyed(SurfaceHolder holder) {
         surfaceIsCreated = false;
 
-        if (connectionListener.getConnectionComplete()) {
+        if (connectionStarted) {
             stopConnection();
         }
     }

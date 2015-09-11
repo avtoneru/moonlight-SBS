@@ -6,16 +6,16 @@ public abstract class AbstractUiConnectionListener implements NvConnectionListen
     private boolean expectingTermination = false;
     private boolean connectionComplete = false;
 
-    public void setExpectingTermination(boolean expectingTermination) {
-        this.expectingTermination = expectingTermination;
+    public void notifyExpectingTermination() {
+        this.expectingTermination = true;
     }
 
     public boolean getExpectingTermination() {
         return this.expectingTermination;
     }
 
-    public void setConnectionComplete(boolean connectionComplete) {
-        this.connectionComplete = connectionComplete;
+    public void notifyConnectionComplete() {
+        this.connectionComplete = true;
     }
 
     public boolean getConnectionComplete() {
@@ -33,4 +33,6 @@ public abstract class AbstractUiConnectionListener implements NvConnectionListen
 
     @Override
     public void displayTransientMessage(String s) {}
+
+    public void notifyStreamStopped() {}
 }
