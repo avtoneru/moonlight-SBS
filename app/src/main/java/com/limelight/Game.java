@@ -379,32 +379,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onGenericMotion(View v, MotionEvent event) {
-        return inputHandler.handleMotionEvent(event);
+        return !inputHandlerRunning || inputHandler.handleMotionEvent(event);
     }
 
     @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouch(View v, MotionEvent event) {
-        return inputHandler.handleMotionEvent(event);
+        return !inputHandlerRunning || inputHandler.handleMotionEvent(event);
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        return inputHandler.handleMotionEvent(event) || super.onTouchEvent(event);
+        return (inputHandlerRunning && inputHandler.handleMotionEvent(event)) || super.onTouchEvent(event);
     }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        return inputHandler.handleMotionEvent(event) || super.onGenericMotionEvent(event);
+        return (inputHandlerRunning && inputHandler.handleMotionEvent(event)) || super.onGenericMotionEvent(event);
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        return inputHandler.handleKeyDown(keyCode, event) || super.onKeyDown(keyCode, event);
+        return (inputHandlerRunning && inputHandler.handleKeyDown(keyCode, event)) || super.onKeyDown(keyCode, event);
     }
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        return inputHandler.handleKeyUp(keyCode, event) || super.onKeyUp(keyCode, event);
+        return (inputHandlerRunning && inputHandler.handleKeyUp(keyCode, event)) || super.onKeyUp(keyCode, event);
     }
 }
